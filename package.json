@@ -1,0 +1,17 @@
+{
+  "name": "tungsten",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/react": "^19.3.0"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.11",
+    "@opentui/react": "^0.5.11",
+    "react": "^19.3.0"
+  },
+  "scripts": {
+    "start": "bun src/index.tsx",
+    "test": "bun test"
+  }
+}

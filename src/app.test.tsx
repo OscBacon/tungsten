@@ -1,0 +1,74 @@
+import { expect, test } from "bun:test"
+import { testRender } from "@opentui/react/test-utils"
+import { act } from "react"
+import { App } from "./app"
+import { demoBuckets, type Bucket } from "./data"
+import { parseRepo } from "./repo"
+
+const press = async (s: Awaited<ReturnType<typeof testRender>>, fn: () => void = () => {}) => {
+  await act(async () => { fn(); await new Promise(r => setTimeout(r, 10)) })
+  await s.renderOnce()
+}
+
+const repo = parseRepo("withgraphite/monologue")
+
+test("arrows move, t collapses the current bucket, cursor lands on its header", async () => {
+  const s = await testRender(<App repo={repo} load={async () => demoBuckets(repo)} />, { width: 110, height: 20 })
+  try {
+    await press(s) // let the load resolve
+    await press(s, () => s.mockInput.pressArrow("down"))
+    await press(s, () => s.mockInput.pressArrow("down"))
+    expect(s.captureCharFrame()).toMatch(/▌ • ◷  refactor/)
+    await press(s, () => s.mockInput.pressKey("t"))
+    let frame = s.captureCharFrame()
+    expect(frame).toContain("▸ Needs your review")
+    expect(frame).not.toContain("refactor")
+    await press(s, () => s.mockInput.pressArrow("down"))   // header -> "Returned to you"
+    await press(s, () => s.mockInput.pressArrow("down"))   // -> "Approved" header
+    await press(s, () => s.mockInput.pressArrow("down"))   // -> first approved PR
+    expect(s.captureCharFrame()).toMatch(/▌ • ✓  \[Snyk\]/)
+    // scroll: walk to the bottom of a short viewport
+    for (let i = 0; i < 12; i++) await press(s, () => s.mockInput.pressArrow("down"))
+    frame = s.captureCharFrame()
+    console.log(frame)
+    expect(frame).toMatch(/▌ • ◆  fix: throw/)
+    expect(frame.trimEnd().split("\n").at(-2)).toMatch(/^╰/) // last bucket fully visible
+  } finally { s.renderer.destroy() }
+})
+
+test("r refreshes: loading state, cursor follows its PR, a failed refresh keeps the last data", async () => {
+  const withoutFirstPr = (): Bucket[] => {
+    const b = demoBuckets(repo)
+    b[0]!.prs.shift()
+    return b
+  }
+  let release!: (b: Bucket[]) => void
+  const loads: (() => Promise<Bucket[]>)[] = [
+    () => new Promise(r => (release = r)),
+    async () => withoutFirstPr(),
+    async () => { throw new Error("HTTP 401: Bad credentials") },
+  ]
+  let calls = 0
+  const load = () => loads[calls++]!()
+
+  const s = await testRender(<App repo={repo} load={load} />, { width: 110, height: 20 })
+  try {
+    await press(s)
+    expect(s.captureCharFrame()).toContain("Loading pull requests…")
+    await press(s, () => release(demoBuckets(repo)))
+    await press(s, () => s.mockInput.pressArrow("down"))
+    await press(s, () => s.mockInput.pressArrow("down"))
+    expect(s.captureCharFrame()).toMatch(/▌ • ◷  refactor/)
+
+    await press(s, () => s.mockInput.pressKey("r"))
+    let frame = s.captureCharFrame()
+    expect(frame).not.toContain("only find upstack")
+    expect(frame).toMatch(/▌ • ◷  refactor/) // same PR, now the first row
+
+    await press(s, () => s.mockInput.pressKey("r"))
+    frame = s.captureCharFrame()
+    expect(frame).toContain("✗ HTTP 401: Bad credentials")
+    expect(frame).toMatch(/▌ • ◷  refactor/)
+    expect(calls).toBe(3)
+  } finally { s.renderer.destroy() }
+})
