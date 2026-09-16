@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { parseArgs } from "node:util"
@@ -6,7 +7,7 @@ import { demoBuckets } from "./data"
 import { fetchBuckets } from "./github"
 import { detectRepo, ghHosts, parseRepo, type Repo } from "./repo"
 
-const USAGE = `Usage: inbox-tui [flags]
+const USAGE = `Usage: tungsten [flags]
 
 Flags:
   -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format

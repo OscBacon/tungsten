@@ -1,6 +1,9 @@
 {
   "name": "tungsten",
   "type": "module",
+  "bin": {
+    "tungsten": "src/index.tsx"
+  },
   "devDependencies": {
     "@types/bun": "^1.4.2",
     "@types/react": "^19.3.0"
