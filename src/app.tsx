@@ -26,7 +26,9 @@ type Item =
 
 const bucketId = (i: number) => `bucket-${i}`
 const bucketBoxId = (i: number) => `bucket-box-${i}`
-const prId = (pr: PR) => `pr-${pr.number}`
+// Scoped to the bucket: one PR can sit in two buckets (say review-requested and open),
+// and each copy needs its own id to be selectable and scrollable on its own.
+const prId = (bucket: number, pr: PR) => `pr-${bucket}-${pr.number}`
 
 function openInBrowser(url: string) {
   const [cmd, args] =
@@ -66,7 +68,7 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
 
   const items = useMemo<Item[]>(() => buckets.flatMap((b, i) => [
     { kind: "bucket" as const, id: bucketId(i), bucket: i },
-    ...(collapsed.has(i) ? [] : b.prs.map(pr => ({ kind: "pr" as const, id: prId(pr), bucket: i, pr }))),
+    ...(collapsed.has(i) ? [] : b.prs.map(pr => ({ kind: "pr" as const, id: prId(i, pr), bucket: i, pr }))),
   ]), [buckets, collapsed])
 
   // The cursor follows an id so it stays on the same PR across refreshes;
@@ -169,7 +171,7 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
                 </text>
               </box>
               {open && b.prs.map(pr => (
-                <PrRow key={pr.number} pr={pr} titleW={titleW} selected={current?.id === prId(pr)} />
+                <PrRow key={pr.number} id={prId(i, pr)} pr={pr} titleW={titleW} selected={current?.id === prId(i, pr)} />
               ))}
             </box>
           )
@@ -185,7 +187,7 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
   )
 }
 
-function PrRow({ pr, titleW, selected }: { pr: PR; titleW: number; selected: boolean }) {
+function PrRow({ id, pr, titleW, selected }: { id: string; pr: PR; titleW: number; selected: boolean }) {
   const [stateGlyph, stateColor] = STATE[pr.state]
   const [ciGlyph, ciColor] = STATUS[pr.ci]
   const [revGlyph, revColor] = STATUS[pr.review]
@@ -193,7 +195,7 @@ function PrRow({ pr, titleW, selected }: { pr: PR; titleW: number; selected: boo
   const changesPad = " ".repeat(Math.max(0, CHANGES_W - add.length - del.length - 1))
 
   return (
-    <box id={prId(pr)} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: selected ? C.selected : C.bg }}>
+    <box id={id} style={{ height: 1, paddingLeft: 1, paddingRight: 1, backgroundColor: selected ? C.selected : C.bg }}>
       <text fg={C.text}>
         <span fg={C.blue}>{selected ? "▌" : " "}</span> <span fg={C.blue}>•</span> <span fg={stateColor}>{stateGlyph}</span>
         {"  "}{selected ? <b>{fit(pr.title, titleW)}</b> : fit(pr.title, titleW)}

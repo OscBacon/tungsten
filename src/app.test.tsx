@@ -72,3 +72,24 @@ test("r refreshes: loading state, cursor follows its PR, a failed refresh keeps 
     expect(calls).toBe(3)
   } finally { s.renderer.destroy() }
 })
+
+test("a PR listed in two buckets selects and moves from the copy the cursor is on", async () => {
+  const dup = demoBuckets(repo)[0]!.prs[0]!
+  const buckets: Bucket[] = [
+    { name: "Needs your review", prs: [dup] },
+    { name: "Open", prs: [dup, { ...dup, number: 999, title: "second open pull request" }] },
+  ]
+  const s = await testRender(<App repo={repo} load={async () => buckets} />, { width: 110, height: 20 })
+  try {
+    await press(s)
+    // header -> the copy in "Needs your review" -> "Open" header -> the copy in "Open"
+    for (let i = 0; i < 3; i++) await press(s, () => s.mockInput.pressArrow("down"))
+    const lines = s.captureCharFrame().split("\n")
+    const openHeader = lines.findIndex(l => l.includes("▾ Open"))
+    expect(lines[openHeader + 1]).toContain("▌") // the copy under Open, not the one above
+    expect(lines.slice(0, openHeader).join("\n")).not.toContain("▌")
+
+    await press(s, () => s.mockInput.pressArrow("down"))
+    expect(s.captureCharFrame()).toMatch(/▌ • ◷  second open pull request/)
+  } finally { s.renderer.destroy() }
+})
