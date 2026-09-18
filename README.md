@@ -2,6 +2,8 @@
 
 A terminal inbox for a GitHub repo's pull requests.
 
+<img width="2502" height="1350" alt="image" src="https://github.com/user-attachments/assets/00dfb440-843e-4c74-ab2b-80184984e309" />
+
 Lists a repo's PRs by bucket, and allow you to open the PR in your browser
 
 <img width="1222" height="720" alt="tungsten-demo" src="https://github.com/user-attachments/assets/81b35e8e-8eca-4ef0-bd14-66a9ba8c1505" />
