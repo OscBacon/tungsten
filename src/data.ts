@@ -15,6 +15,7 @@ export interface PR {
   updated: string
   stale?: boolean
   url: string
+  branch: string // local branch name for checkouts; see localBranch() in github.ts
 }
 
 export interface Bucket {
@@ -27,7 +28,7 @@ export interface Bucket {
 export function demoBuckets(repo: Repo): Bucket[] {
   // Swap for your Graphite PR link format if you'd rather open PRs there.
   const url = (n: number) => `https://${repo.host}/${repo.owner}/${repo.name}/pull/${n}`
-  const pr = (p: Omit<PR, "url">): PR => ({ ...p, url: url(p.number) })
+  const pr = (p: Omit<PR, "url" | "branch">): PR => ({ ...p, url: url(p.number), branch: `${p.author}/pr-${p.number}` })
 
   return [
     { name: "Needs your review", prs: [

@@ -46,7 +46,15 @@ const AUTHOR_W = 20, CHANGES_W = 11, UPDATED_W = 4
 const FIXED = 7 + 2 + AUTHOR_W + 2 + 1 + 2 + 1 + 2 + CHANGES_W + 2 + UPDATED_W
 const CHROME = 2 + 2 + 1 // bucket border, row padding, scrollbar
 
-export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> }) {
+// Each resolves to a success message or rejects with the error to show.
+export interface Actions {
+  checkout(pr: PR): Promise<string>
+  worktree(pr: PR): Promise<string>
+}
+
+const printable = (s: string) => s.length > 0 && !/[\x00-\x1f\x7f]/.test(s)
+
+export function App({ repo, load, actions }: { repo: Repo; load: (search?: string) => Promise<Bucket[]>; actions: Actions }) {
   const renderer = useRenderer()
   const { width } = useTerminalDimensions()
   const scroll = useRef<ScrollBoxRenderable>(null)
@@ -56,15 +64,34 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
   const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(new Set())
   const [cursorId, setCursorId] = useState<string>()
   const lastIndex = useRef(0)
+  const [search, setSearch] = useState("") // applied: every load uses it
+  // The search being typed, while the "/" prompt is open. Keys can arrive faster than renders
+  // (typing fast, pasting), so each one reads and writes the ref, not a stale render's value.
+  const [input, setInputState] = useState<string>()
+  const inputRef = useRef<string>(undefined)
+  const setInput = (v: string | undefined) => { inputRef.current = v; setInputState(v) }
+  const [notice, setNotice] = useState<{ text: string; color: string }>()
+  const [busy, setBusy] = useState(false)
 
-  // A failed refresh keeps the last good data on screen.
+  // A failed refresh keeps the last good data on screen. Only the latest load lands,
+  // so a slow one can't overwrite the results of a newer search.
+  const latest = useRef(0)
   const refresh = useCallback(() => {
+    const id = ++latest.current
     setLoading(true)
-    load()
-      .then(b => { setBuckets(b); setError(undefined) }, (e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false))
-  }, [load])
+    load(search || undefined)
+      .then(b => { if (id === latest.current) { setBuckets(b); setError(undefined) } },
+        (e: unknown) => { if (id === latest.current) setError(e instanceof Error ? e.message : String(e)) })
+      .finally(() => { if (id === latest.current) setLoading(false) })
+  }, [load, search])
   useEffect(refresh, [refresh])
+
+  const applySearch = (next: string) => {
+    if (next === search) return
+    setSearch(next)
+    setCursorId(undefined) // new results: start from the top
+    lastIndex.current = 0
+  }
 
   const items = useMemo<Item[]>(() => buckets.flatMap((b, i) => [
     { kind: "bucket" as const, id: bucketId(i), bucket: i },
@@ -103,8 +130,28 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
     setCursorId(bucketId(bucket))
   }
 
+  const runAction = (fn: (pr: PR) => Promise<string>, pending: string) => {
+    if (busy || current?.kind !== "pr") return
+    setBusy(true)
+    setNotice({ text: `${pending} PR #${current.pr.number}…`, color: C.muted })
+    fn(current.pr)
+      .then(text => setNotice({ text: `✓ ${text}`, color: C.green }),
+        (e: unknown) => setNotice({ text: `✗ ${e instanceof Error ? e.message : String(e)}`, color: C.red }))
+      .finally(() => setBusy(false))
+  }
+
   useKeyboard(key => {
+    // While typing a search, keys are text; only enter and esc leave the prompt.
+    const input = inputRef.current
+    if (input !== undefined) {
+      if (key.name === "escape") { setInput(undefined); applySearch("") }
+      else if (key.name === "return") { setInput(undefined); applySearch(input.trim()) }
+      else if (key.name === "backspace") setInput(input.slice(0, -1))
+      else if (!key.ctrl && !key.meta && printable(key.sequence)) setInput(input + key.sequence)
+      return
+    }
     if (key.ctrl || key.meta) return
+    if (key.sequence === "/") return setInput(search)
     switch (key.name) {
       case "up":
       case "k":
@@ -121,6 +168,15 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
         if (current?.kind === "pr") openInBrowser(current.pr.url)
         else if (current) toggle(current.bucket)
         break
+      case "c":
+        runAction(actions.checkout, "Checking out")
+        break
+      case "w":
+        runAction(actions.worktree, "Opening a worktree for")
+        break
+      case "escape":
+        applySearch("")
+        break
       case "r":
         if (!loading) refresh()
         break
@@ -135,13 +191,13 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", backgroundColor: C.bg }}>
       <box style={{ height: 1, paddingLeft: 1, flexDirection: "row", justifyContent: "space-between", paddingRight: 1 }}>
-        <text fg={C.text}><b>Inbox</b></text>
+        <text fg={C.text}><b>Inbox</b>{search && <span fg={C.muted}>{fit(`  / ${search}`, Math.max(0, width - repoLabel(repo).length - 20))}</span>}</text>
         <text fg={C.muted}>{loading && <span fg={C.faint}>loading…  </span>}{repoLabel(repo)}</text>
       </box>
 
-      {error && (
+      {(error || notice) && (
         <box style={{ height: 1, paddingLeft: 1, paddingRight: 1 }}>
-          <text fg={C.red}>{fit(`✗ ${error}`, Math.max(0, width - 2))}</text>
+          <text fg={error ? C.red : notice!.color}>{fit(error ? `✗ ${error}` : notice!.text, Math.max(0, width - 2))}</text>
         </box>
       )}
 
@@ -179,9 +235,15 @@ export function App({ repo, load }: { repo: Repo; load: () => Promise<Bucket[]> 
       </scrollbox>
 
       <box style={{ height: 1, paddingLeft: 1 }}>
-        <text fg={C.faint}>
-          <span fg={C.text}>↑↓</span> move   <span fg={C.text}>t</span> toggle bucket   <span fg={C.text}>enter</span> open PR   <span fg={C.text}>r</span> refresh   <span fg={C.text}>q</span> quit
-        </text>
+        {input !== undefined ? (
+          <text fg={C.faint}>
+            <span fg={C.text}>/ {input}█</span>   <span fg={C.text}>enter</span> search   <span fg={C.text}>esc</span> clear   words match titles, @login authors, #123 numbers
+          </text>
+        ) : (
+          <text fg={C.faint}>
+            <span fg={C.text}>↑↓</span> move   <span fg={C.text}>t</span> toggle bucket   <span fg={C.text}>enter</span> open PR   <span fg={C.text}>/</span> search   <span fg={C.text}>c</span> checkout   <span fg={C.text}>w</span> worktree   <span fg={C.text}>r</span> refresh   <span fg={C.text}>q</span> quit
+          </text>
+        )}
       </box>
     </box>
   )
