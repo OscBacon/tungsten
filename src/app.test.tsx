@@ -126,7 +126,8 @@ test("/ types a search that only loads on enter; esc clears it", async () => {
     expect(frame).toMatch(/Inbox {2}\/ refactor rt/)
     expect(frame).not.toContain("only find upstack")
     expect(frame).toContain("refactor: add logic")
-    expect(frame).toContain("r refresh") // the footer is back
+    // The footer is back, with a way out in place of "/ search".
+    expect(frame.trimEnd().split("\n").at(-1)).toMatch(/^ esc clear search {3}↑↓ move .* enter open PR {3}c checkout .* q quit/)
 
     await press(s, () => s.mockInput.pressKey("r")) // refresh keeps the search
     expect(searches.at(-1)).toBe("refactor rt")
@@ -134,7 +135,9 @@ test("/ types a search that only loads on enter; esc clears it", async () => {
     await press(s, () => s.mockInput.pressEscape())
     await press(s)
     expect(searches.at(-1)).toBeUndefined()
-    expect(s.captureCharFrame()).toContain("only find upstack")
+    frame = s.captureCharFrame()
+    expect(frame).toContain("only find upstack")
+    expect(frame.trimEnd().split("\n").at(-1)).toMatch(/^ ↑↓ move .* enter open PR {3}\/ search {3}c checkout/)
 
     // esc in the prompt also clears an applied search
     await press(s, () => s.mockInput.pressKey("/"))

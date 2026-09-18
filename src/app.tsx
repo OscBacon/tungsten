@@ -241,7 +241,7 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
           </text>
         ) : (
           <text fg={C.faint}>
-            <span fg={C.text}>↑↓</span> move   <span fg={C.text}>t</span> toggle bucket   <span fg={C.text}>enter</span> open PR   <span fg={C.text}>/</span> search   <span fg={C.text}>c</span> checkout   <span fg={C.text}>w</span> worktree   <span fg={C.text}>r</span> refresh   <span fg={C.text}>q</span> quit
+            {search && <><span fg={C.text}>esc</span> clear search   </>}<span fg={C.text}>↑↓</span> move   <span fg={C.text}>t</span> toggle bucket   <span fg={C.text}>enter</span> open PR   {!search && <><span fg={C.text}>/</span> search   </>}<span fg={C.text}>c</span> checkout   <span fg={C.text}>w</span> worktree   <span fg={C.text}>r</span> refresh   <span fg={C.text}>q</span> quit
           </text>
         )}
       </box>
