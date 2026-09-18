@@ -61,10 +61,11 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
   const [buckets, setBuckets] = useState<Bucket[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
-  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(new Set())
+  // By name, so a bucket stays collapsed across refreshes and searches that change the bucket list.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [cursorId, setCursorId] = useState<string>()
   const lastIndex = useRef(0)
-  const [search, setSearch] = useState("") // applied: every load uses it
+  const [search, setSearch] = useState("") // applied: loads and refreshes use it
   // The search being typed, while the "/" prompt is open. Keys can arrive faster than renders
   // (typing fast, pasting), so each one reads and writes the ref, not a stale render's value.
   const [input, setInputState] = useState<string>()
@@ -73,29 +74,41 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
   const [notice, setNotice] = useState<{ text: string; color: string }>()
   const [busy, setBusy] = useState(false)
 
+  // The last unsearched buckets, so clearing a search puts them back without a fetch; r refreshes them.
+  const home = useRef<Bucket[]>(undefined)
+
   // A failed refresh keeps the last good data on screen. Only the latest load lands,
   // so a slow one can't overwrite the results of a newer search.
   const latest = useRef(0)
-  const refresh = useCallback(() => {
+  const refresh = useCallback((search: string) => {
     const id = ++latest.current
     setLoading(true)
     load(search || undefined)
-      .then(b => { if (id === latest.current) { setBuckets(b); setError(undefined) } },
-        (e: unknown) => { if (id === latest.current) setError(e instanceof Error ? e.message : String(e)) })
+      .then(b => {
+        if (id !== latest.current) return
+        setBuckets(b)
+        setError(undefined)
+        if (!search) home.current = b
+      }, (e: unknown) => { if (id === latest.current) setError(e instanceof Error ? e.message : String(e)) })
       .finally(() => { if (id === latest.current) setLoading(false) })
-  }, [load, search])
-  useEffect(refresh, [refresh])
+  }, [load])
+  useEffect(() => refresh(""), [refresh])
 
   const applySearch = (next: string) => {
     if (next === search) return
     setSearch(next)
     setCursorId(undefined) // new results: start from the top
     lastIndex.current = 0
+    if (next || !home.current) return refresh(next)
+    latest.current++ // drop a search still loading
+    setBuckets(home.current)
+    setError(undefined)
+    setLoading(false)
   }
 
   const items = useMemo<Item[]>(() => buckets.flatMap((b, i) => [
     { kind: "bucket" as const, id: bucketId(i), bucket: i },
-    ...(collapsed.has(i) ? [] : b.prs.map(pr => ({ kind: "pr" as const, id: prId(i, pr), bucket: i, pr }))),
+    ...(collapsed.has(b.name) ? [] : b.prs.map(pr => ({ kind: "pr" as const, id: prId(i, pr), bucket: i, pr }))),
   ]), [buckets, collapsed])
 
   // The cursor follows an id so it stays on the same PR across refreshes;
@@ -109,7 +122,8 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
     const box = scroll.current
     if (!box || !current) return
     // At a bucket's edge, first reveal the whole bucket so its bottom border isn't clipped.
-    const rows = collapsed.has(current.bucket) ? [] : buckets[current.bucket]!.prs
+    const bucket = buckets[current.bucket]!
+    const rows = collapsed.has(bucket.name) ? [] : bucket.prs
     const atBucketEnd = rows.length === 0 || (current.kind === "pr" && current.pr === rows.at(-1))
     if (atBucketEnd) box.scrollChildIntoView(bucketBoxId(current.bucket))
     box.scrollChildIntoView(current.id)
@@ -121,9 +135,10 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
   }
 
   const toggle = (bucket: number) => {
+    const name = buckets[bucket]!.name
     setCollapsed(prev => {
       const next = new Set(prev)
-      next.has(bucket) ? next.delete(bucket) : next.add(bucket)
+      next.has(name) ? next.delete(name) : next.add(name)
       return next
     })
     // Park the cursor on the header: the rows below it may vanish.
@@ -178,7 +193,7 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
         applySearch("")
         break
       case "r":
-        if (!loading) refresh()
+        if (!loading) refresh(search)
         break
       case "q":
         renderer.destroy()
@@ -209,7 +224,7 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
         )}
         {buckets.map((b, i) => {
           const count = b.total ?? b.prs.length
-          const open = !collapsed.has(i)
+          const open = !collapsed.has(b.name)
           const onHeader = current?.id === bucketId(i)
           return (
             <box

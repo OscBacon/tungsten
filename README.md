@@ -54,7 +54,8 @@ Each shows up to 25 PRs and the total count.
 
 ## Search
 
-`/` opens a prompt; `enter` searches GitHub, `esc` clears the search.
+`/` opens a prompt; `enter` searches GitHub, `esc` clears the search and goes back to the
+PRs from before it without refetching them (`r` refreshes them).
 
     fix token      words in the title
     @login         PRs by that author (several @logins: any of them)

@@ -10,6 +10,12 @@ const press = async (s: Awaited<ReturnType<typeof testRender>>, fn: () => unknow
   await s.renderOnce()
 }
 
+// A lone ESC is only reported once the input parser gives up waiting for a longer sequence.
+const escape = async (s: Awaited<ReturnType<typeof testRender>>) => {
+  await press(s, () => s.mockInput.pressEscape())
+  await press(s)
+}
+
 const repo = parseRepo("withgraphite/monologue")
 const noActions: Actions = { checkout: async () => "", worktree: async () => "" }
 
@@ -134,7 +140,7 @@ test("/ types a search that only loads on enter; esc clears it", async () => {
 
     await press(s, () => s.mockInput.pressEscape())
     await press(s)
-    expect(searches.at(-1)).toBeUndefined()
+    expect(searches).toEqual([undefined, "refactor rt", "refactor rt"]) // cleared without a fetch
     frame = s.captureCharFrame()
     expect(frame).toContain("only find upstack")
     expect(frame.trimEnd().split("\n").at(-1)).toMatch(/^ ↑↓ move .* enter open PR {3}\/ search {3}c checkout/)
@@ -148,7 +154,102 @@ test("/ types a search that only loads on enter; esc clears it", async () => {
     expect(s.captureCharFrame()).toContain("/ @someone█") // reopens with the current search
     await press(s, () => s.mockInput.pressEscape())
     await press(s)
-    expect(searches.at(-1)).toBeUndefined()
+    expect(searches.at(-1)).toBe("@someone")
+    expect(s.captureCharFrame()).toContain("only find upstack")
+  } finally { s.renderer.destroy() }
+})
+
+// A load per call that the test resolves by hand, recording what each was for.
+function manualLoads() {
+  const calls: { search?: string; resolve: (b: Bucket[]) => void }[] = []
+  const load = (search?: string) => new Promise<Bucket[]>(resolve => calls.push({ search, resolve }))
+  return { load, calls }
+}
+const titled = (title: string): Bucket[] => {
+  const b = demoBuckets(repo)
+  b[0]!.prs[0] = { ...b[0]!.prs[0]!, title }
+  return b
+}
+const results = (title: string): Bucket[] => [{ name: "Search results", prs: [{ ...demoBuckets(repo)[0]!.prs[1]!, title }] }]
+
+test("clearing a search shows the last unsearched data at once, from the top; r refetches it", async () => {
+  const { load, calls } = manualLoads()
+  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 20 })
+  const search = async (q: string) => {
+    await press(s, () => s.mockInput.pressKey("/"))
+    await press(s, () => s.mockInput.typeText(q))
+    await press(s, () => s.mockInput.pressEnter())
+  }
+  try {
+    await press(s, () => calls[0]!.resolve(titled("first unsearched load")))
+    await press(s, () => s.mockInput.pressArrow("down"))
+    await press(s, () => s.mockInput.pressArrow("down"))
+    expect(s.captureCharFrame()).toMatch(/▌ • ◷  refactor/)
+
+    await search("docs")
+    await press(s, () => calls[1]!.resolve(results("docs result")))
+    expect(s.captureCharFrame()).toContain("docs result")
+
+    await escape(s)
+    let frame = s.captureCharFrame()
+    expect(calls.length).toBe(2)
+    expect(frame).toContain("first unsearched load")
+    expect(frame).not.toContain("loading…")
+    expect(frame).not.toContain("▌") // back at the top, on the first header
+
+    // A search still loading when it's cleared can't land afterwards.
+    await search("slow")
+    await escape(s)
+    await press(s, () => calls[2]!.resolve(results("late search result")))
+    frame = s.captureCharFrame()
+    expect(frame).toContain("first unsearched load")
+    expect(frame).not.toContain("late search result")
+
+    await press(s, () => s.mockInput.pressKey("r"))
+    expect(calls.map(c => c.search)).toEqual([undefined, "docs", "slow", undefined])
+    await press(s, () => calls[3]!.resolve(titled("refreshed unsearched load")))
+    expect(s.captureCharFrame()).toContain("refreshed unsearched load")
+  } finally { s.renderer.destroy() }
+})
+
+test("an unsearched load still running when a search starts is dropped, so clearing fetches", async () => {
+  const { load, calls } = manualLoads()
+  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 20 })
+  try {
+    await press(s)
+    await press(s, () => s.mockInput.pressKey("/"))
+    await press(s, () => s.mockInput.typeText("docs"))
+    await press(s, () => s.mockInput.pressEnter())
+    await press(s, () => calls[0]!.resolve(titled("dropped unsearched load")))
+    await press(s, () => calls[1]!.resolve(results("docs result")))
+    expect(s.captureCharFrame()).not.toContain("dropped unsearched load")
+
+    await escape(s)
+    expect(calls.map(c => c.search)).toEqual([undefined, "docs", undefined])
+    await press(s, () => calls[2]!.resolve(titled("fresh unsearched load")))
+    expect(s.captureCharFrame()).toContain("fresh unsearched load")
+  } finally { s.renderer.destroy() }
+})
+
+test("collapsed buckets are tracked by name across searches", async () => {
+  const load = async (search?: string) => (search ? results("docs result") : demoBuckets(repo))
+  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 30 })
+  try {
+    await press(s)
+    for (let i = 0; i < 5; i++) await press(s, () => s.mockInput.pressArrow("down")) // "Approved" header
+    await press(s, () => s.mockInput.pressKey("t"))
+    expect(s.captureCharFrame()).toContain("▸ Approved")
+
+    await press(s, () => s.mockInput.pressKey("/"))
+    await press(s, () => s.mockInput.typeText("docs"))
+    await press(s, () => s.mockInput.pressEnter())
+    await press(s, () => s.mockInput.pressKey("t")) // collapse "Search results", the first bucket
+    expect(s.captureCharFrame()).toContain("▸ Search results")
+
+    await escape(s)
+    const frame = s.captureCharFrame()
+    expect(frame).toContain("▾ Needs your review") // not collapsed by position
+    expect(frame).toContain("▸ Approved")
   } finally { s.renderer.destroy() }
 })
 
