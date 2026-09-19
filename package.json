@@ -1,6 +1,7 @@
 {
-  "name": "tungsten",
+  "name": "@oscbacon/tungsten",
   "type": "module",
+  "version": "0.0.1",
   "bin": {
     "tungsten": "src/index.tsx"
   },

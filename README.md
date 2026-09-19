@@ -15,17 +15,28 @@ Lists a repo's PRs by bucket, and allow you to open the PR in your browser
 
 ## Install
 
-    git clone git@github.com:OscBacon/tungsten.git
-    cd tungsten
-    bun install
-    bun link    # links `tungsten` into ~/.bun/bin; make sure that's on your PATH
+```bash
+npm i -g @oscbacon/tungsten
+```
+
+Or from the source:
+
+```bash
+git clone git@github.com:OscBacon/tungsten.git
+cd tungsten
+bun install
+bun link    # links `tungsten` into ~/.bun/bin; make sure that's on your PATH
+```
+
 
 ## Usage
 
-    tungsten                 # repo from the current clone's git remotes, like gh
-    tungsten -R cli/cli      # or pick one: [HOST/]OWNER/REPO
-    tungsten --demo          # sample data, no clone or network
-    tungsten --show-git-prompt  # let c and w ask for ssh passphrases or credentials
+```bash
+tungsten                 # repo from the current clone's git remotes, like gh
+tungsten -R cli/cli      # or pick one: [HOST/]OWNER/REPO
+tungsten --demo          # sample data, no clone or network
+tungsten --show-git-prompt  # let c and w ask for ssh passphrases or credentials
+```
 
 ## Buckets
 
