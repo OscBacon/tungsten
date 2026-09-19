@@ -1,9 +1,29 @@
 {
   "name": "@oscbacon/tungsten",
   "type": "module",
-  "version": "0.0.1",
+  "version": "0.0.2",
+  "description": "A terminal inbox for a GitHub repo's pull requests",
+  "keywords": ["github", "pull-requests", "tui", "terminal", "cli"],
+  "license": "MIT",
+  "author": "Oscar Baracos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OscBacon/tungsten.git"
+  },
+  "homepage": "https://github.com/OscBacon/tungsten#readme",
+  "bugs": {
+    "url": "https://github.com/OscBacon/tungsten/issues"
+  },
   "bin": {
     "tungsten": "src/index.tsx"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.*",
+    "tsconfig.json"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
