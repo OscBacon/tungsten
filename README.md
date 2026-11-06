@@ -55,16 +55,17 @@ their PRs, newest first, and each row names its repo next to the author.
 
 ## Keys
 
-| Key      | Action             |
-|----------|--------------------|
-| ↑↓ / j k | move               |
-| t        | collapse bucket    |
-| enter    | open PR in browser |
-| /        | search             |
-| c        | check out PR       |
-| w        | open PR worktree   |
-| r        | refresh            |
-| q        | quit               |
+| Key       | Action                 |
+|-----------|------------------------|
+| ↑↓ / j k  | move                   |
+| PgUp/PgDn | previous / next bucket |
+| t         | collapse bucket        |
+| enter     | open PR in browser     |
+| /         | search                 |
+| c         | check out PR           |
+| w         | open PR worktree       |
+| r         | refresh                |
+| q         | quit                   |
 
 ## Search
 

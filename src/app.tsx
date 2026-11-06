@@ -144,6 +144,13 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
     if (next) setCursorId(next.id)
   }
 
+  // PgUp/PgDn jump between bucket headers, from anywhere inside a bucket.
+  const jumpBucket = (delta: number) => {
+    if (!current) return
+    const target = Math.min(buckets.length - 1, Math.max(0, current.bucket + delta))
+    setCursorId(bucketId(target))
+  }
+
   const toggle = (bucket: number) => {
     const name = buckets[bucket]!.name
     setCollapsed(prev => {
@@ -185,6 +192,12 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
       case "down":
       case "j":
         move(1)
+        break
+      case "pageup":
+        jumpBucket(-1)
+        break
+      case "pagedown":
+        jumpBucket(1)
         break
       case "t":
         if (current) toggle(current.bucket)

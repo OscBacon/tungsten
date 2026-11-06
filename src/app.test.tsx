@@ -305,3 +305,21 @@ test("several repos: rows name their repo, and PRs sharing a number are told apa
     expect(frame.match(/▌/g)).toHaveLength(1)
   } finally { s.renderer.destroy() }
 })
+
+test("page down and page up jump between bucket headers", async () => {
+  const s = await testRender(<App repos={[repo]} load={async () => demoBuckets(repo)} actions={noActions} />, { width: 110, height: 40 })
+  const pageDown = () => press(s, () => s.mockInput.pressKey("\x1b[6~"))
+  const pageUp = () => press(s, () => s.mockInput.pressKey("\x1b[5~"))
+  try {
+    await press(s)
+    for (let i = 0; i < 4; i++) await pageDown() // -> "Drafts" header
+    await press(s, () => s.mockInput.pressArrow("down")) // into the Drafts bucket
+    await pageDown() // -> "Open" header
+    await press(s, () => s.mockInput.pressKey("t")) // collapses whichever bucket the cursor is in
+    expect(s.captureCharFrame()).toContain("▸ Open")
+    await press(s, () => s.mockInput.pressKey("t"))
+    await pageUp() // -> "Drafts" header
+    await press(s, () => s.mockInput.pressKey("t"))
+    expect(s.captureCharFrame()).toContain("▸ Drafts")
+  } finally { s.renderer.destroy() }
+})
