@@ -1,9 +1,15 @@
 {
   "name": "@oscbacon/tungsten",
   "type": "module",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "A terminal inbox for a GitHub repo's pull requests",
-  "keywords": ["github", "pull-requests", "tui", "terminal", "cli"],
+  "keywords": [
+    "github",
+    "pull-requests",
+    "tui",
+    "terminal",
+    "cli"
+  ],
   "license": "MIT",
   "author": "Oscar Baracos",
   "repository": {
