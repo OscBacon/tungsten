@@ -1,7 +1,7 @@
 {
   "name": "@oscbacon/tungsten",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A terminal inbox for a GitHub repo's pull requests",
   "keywords": [
     "github",
