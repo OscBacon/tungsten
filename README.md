@@ -34,7 +34,9 @@ bun link    # links `tungsten` into ~/.bun/bin; make sure that's on your PATH
 ```bash
 tungsten                 # repo from the current clone's git remotes, like gh
 tungsten -R cli/cli      # or pick one: [HOST/]OWNER/REPO
+tungsten -R cli/cli,cli/go-gh   # or several, listed together (repeating -R works too)
 tungsten --demo          # sample data, no clone or network
+tungsten --demo-multiple # sample data from several repos
 tungsten --show-git-prompt  # let c and w ask for ssh passphrases or credentials
 ```
 
@@ -48,7 +50,8 @@ tungsten --show-git-prompt  # let c and w ask for ssh passphrases or credentials
 - Open
 - Recently merged
 
-Each shows up to 25 PRs and the total count.
+Each shows up to 25 PRs and the total count. With several repos, each bucket holds all of
+their PRs, newest first, and each row names its repo next to the author.
 
 ## Keys
 
@@ -70,11 +73,12 @@ PRs from before it without refetching them (`r` refreshes them).
 
     fix token      words in the title
     @login         PRs by that author (several @logins: any of them)
-    #123           that PR, looked up directly
+    #123           that PR, looked up directly (in every repo shown)
+    go-gh#123      that PR in one repo; cli/go-gh#123 works too
 
 ## Checking out
 
-Both keys work from a clone of the repo on screen, and hand the PR to `gh pr checkout`,
+Both keys work from a clone of the PR's repo, and hand the PR to `gh pr checkout`,
 so forks and remotes behave as they do there.
 
 - `c` checks the PR out in the current clone.

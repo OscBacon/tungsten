@@ -20,7 +20,7 @@ const repo = parseRepo("withgraphite/monologue")
 const noActions: Actions = { checkout: async () => "", worktree: async () => "" }
 
 test("arrows move, t collapses the current bucket, cursor lands on its header", async () => {
-  const s = await testRender(<App repo={repo} load={async () => demoBuckets(repo)} actions={noActions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={async () => demoBuckets(repo)} actions={noActions} />, { width: 110, height: 20 })
   try {
     await press(s) // let the load resolve
     await press(s, () => s.mockInput.pressArrow("down"))
@@ -58,7 +58,7 @@ test("r refreshes: loading state, cursor follows its PR, a failed refresh keeps 
   let calls = 0
   const load = () => loads[calls++]!()
 
-  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={load} actions={noActions} />, { width: 110, height: 20 })
   try {
     await press(s)
     expect(s.captureCharFrame()).toContain("Loading pull requests…")
@@ -86,7 +86,7 @@ test("a PR listed in two buckets selects and moves from the copy the cursor is o
     { name: "Needs your review", prs: [dup] },
     { name: "Open", prs: [dup, { ...dup, number: 999, title: "second open pull request" }] },
   ]
-  const s = await testRender(<App repo={repo} load={async () => buckets} actions={noActions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={async () => buckets} actions={noActions} />, { width: 110, height: 20 })
   try {
     await press(s)
     // header -> the copy in "Needs your review" -> "Open" header -> the copy in "Open"
@@ -102,7 +102,7 @@ test("a PR listed in two buckets selects and moves from the copy the cursor is o
 })
 
 test("footer lists / c w between enter and r", async () => {
-  const s = await testRender(<App repo={repo} load={async () => demoBuckets(repo)} actions={noActions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={async () => demoBuckets(repo)} actions={noActions} />, { width: 110, height: 20 })
   try {
     await press(s)
     expect(s.captureCharFrame().trimEnd().split("\n").at(-1)).toMatch(/enter open PR {3}\/ search {3}c checkout {3}w worktree {3}r refresh {3}q quit/)
@@ -115,7 +115,7 @@ test("/ types a search that only loads on enter; esc clears it", async () => {
     searches.push(search)
     return search ? [{ name: "Open", prs: demoBuckets(repo)[0]!.prs.slice(1, 2) }] : demoBuckets(repo)
   }
-  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={load} actions={noActions} />, { width: 110, height: 20 })
   try {
     await press(s)
     await press(s, () => s.mockInput.pressKey("/"))
@@ -174,7 +174,7 @@ const results = (title: string): Bucket[] => [{ name: "Search results", prs: [{ 
 
 test("clearing a search shows the last unsearched data at once, from the top; r refetches it", async () => {
   const { load, calls } = manualLoads()
-  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={load} actions={noActions} />, { width: 110, height: 20 })
   const search = async (q: string) => {
     await press(s, () => s.mockInput.pressKey("/"))
     await press(s, () => s.mockInput.typeText(q))
@@ -214,7 +214,7 @@ test("clearing a search shows the last unsearched data at once, from the top; r 
 
 test("an unsearched load still running when a search starts is dropped, so clearing fetches", async () => {
   const { load, calls } = manualLoads()
-  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={load} actions={noActions} />, { width: 110, height: 20 })
   try {
     await press(s)
     await press(s, () => s.mockInput.pressKey("/"))
@@ -233,7 +233,7 @@ test("an unsearched load still running when a search starts is dropped, so clear
 
 test("collapsed buckets are tracked by name across searches", async () => {
   const load = async (search?: string) => (search ? results("docs result") : demoBuckets(repo))
-  const s = await testRender(<App repo={repo} load={load} actions={noActions} />, { width: 110, height: 30 })
+  const s = await testRender(<App repos={[repo]} load={load} actions={noActions} />, { width: 110, height: 30 })
   try {
     await press(s)
     for (let i = 0; i < 5; i++) await press(s, () => s.mockInput.pressArrow("down")) // "Approved" header
@@ -264,7 +264,7 @@ test("c and w act on the PR under the cursor and show the outcome", async () => 
     },
     worktree: async pr => { calls.push(`worktree #${pr.number}`); throw new Error("w needs gh 2.98 or newer") },
   }
-  const s = await testRender(<App repo={repo} load={async () => demoBuckets(repo)} actions={actions} />, { width: 110, height: 20 })
+  const s = await testRender(<App repos={[repo]} load={async () => demoBuckets(repo)} actions={actions} />, { width: 110, height: 20 })
   try {
     await press(s)
     await press(s, () => s.mockInput.pressKey("c")) // on a bucket header: nothing to check out
@@ -283,5 +283,25 @@ test("c and w act on the PR under the cursor and show the outcome", async () => 
     await press(s)
     expect(calls).toEqual(["checkout #21325", "worktree #21324"])
     expect(s.captureCharFrame()).toContain("✗ w needs gh 2.98 or newer")
+  } finally { s.renderer.destroy() }
+})
+
+test("several repos: rows name their repo, and PRs sharing a number are told apart", async () => {
+  const repos = ["movablevoice/workfone", "movablevoice/workfone-ios"].map(r => parseRepo(r))
+  const [a, b] = demoBuckets(...repos)[0]!.prs
+  const buckets: Bucket[] = [{ name: "Open", prs: [{ ...a!, number: 7 }, { ...b!, number: 7, title: "same number, other repo" }] }]
+  const s = await testRender(<App repos={repos} load={async () => buckets} actions={noActions} />, { width: 140, height: 20 })
+  try {
+    await press(s)
+    let frame = s.captureCharFrame()
+    expect(frame).toContain("movablevoice/workfone, movablevoice/workfone-ios")
+    expect(frame).toContain("aryamannaik workfone#7")
+    expect(frame).toContain("aryamannaik workfone-ios#7")
+
+    await press(s, () => s.mockInput.pressArrow("down"))
+    await press(s, () => s.mockInput.pressArrow("down"))
+    frame = s.captureCharFrame()
+    expect(frame).toMatch(/▌ • ◷  same number, other repo/)
+    expect(frame.match(/▌/g)).toHaveLength(1)
   } finally { s.renderer.destroy() }
 })

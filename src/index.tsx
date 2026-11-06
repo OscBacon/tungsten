@@ -4,7 +4,7 @@ import { createRoot } from "@opentui/react"
 import { parseArgs } from "node:util"
 import { App, type Actions } from "./app"
 import { checkoutPr, needsPrompt, openWorktree } from "./checkout"
-import { demoBuckets } from "./data"
+import { demoBuckets, type PR } from "./data"
 import { fetchBuckets, matches, parseSearch } from "./github"
 import { detectRepo, ghHosts, parseRepo, repoLabel, type Repo } from "./repo"
 import { run, type Run } from "./run"
@@ -12,21 +12,26 @@ import { run, type Run } from "./run"
 const USAGE = `Usage: tungsten [flags]
 
 Flags:
-  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format;
+                                 repeat it or separate repos with commas to list them together
       --demo                     Show sample data instead of fetching from GitHub
+      --demo-multiple            Like --demo, with PRs from several repos
       --show-git-prompt          Let c and w show git's prompts (ssh passphrase, credentials);
                                  the app is hidden while they run
   -h, --help                     Show help`
 
-let repo: Repo
+const key = (r: Repo) => `${r.host}/${r.owner}/${r.name}`.toLowerCase()
+
+let repos: Repo[]
 let demo: boolean
 let showGitPrompt: boolean
-let notLocal: string | undefined // why c and w can't work from here
+let here: Repo | undefined // the repo cloned in the current folder, where c and w work
 try {
   const { values } = parseArgs({
     options: {
-      repo: { type: "string", short: "R" },
+      repo: { type: "string", short: "R", multiple: true },
       demo: { type: "boolean" },
+      "demo-multiple": { type: "boolean" },
       "show-git-prompt": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -35,24 +40,23 @@ try {
     console.log(USAGE)
     process.exit(0)
   }
-  demo = values.demo ?? false
+  const demoMultiple = values["demo-multiple"] ?? false
+  demo = (values.demo ?? false) || demoMultiple
   showGitPrompt = values["show-git-prompt"] ?? false
   // Like gh: OWNER/REPO uses gh's default host, and no flag means the current folder's git remotes.
-  // --demo shouldn't need a clone, so it falls back to a sample repo.
+  // --demo shouldn't need a clone, so it falls back to sample repos.
   const hosts = ghHosts()
-  repo =
-    values.repo ? parseRepo(values.repo, hosts.defaultHost) :
-    demo ? parseRepo("withgraphite/monologue") :
-    detectRepo(process.cwd(), hosts)
-  // Checkouts happen in the current folder, so it has to be a clone of the repo on screen.
-  if (demo) notLocal = "not available with --demo"
-  else if (values.repo) {
-    const key = (r: Repo) => `${r.host}/${r.owner}/${r.name}`.toLowerCase()
-    let here: Repo | undefined
-    try { here = detectRepo(process.cwd(), hosts) } catch {}
-    if (!here || key(here) !== key(repo)) {
-      notLocal = `run tungsten from a clone of ${repoLabel(repo)} to check out its PRs`
-    }
+  const named = (values.repo ?? []).flatMap(v => v.split(",")).map(v => v.trim()).filter(Boolean)
+  repos =
+    named.length ? named.map(r => parseRepo(r, hosts.defaultHost)).filter((r, i, all) => all.findIndex(o => key(o) === key(r)) === i) :
+    demoMultiple ? ["withgraphite/monologue", "withgraphite/graphite-cli", "withgraphite/retype"].map(r => parseRepo(r)) :
+    demo ? [parseRepo("withgraphite/monologue")] :
+    [detectRepo(process.cwd(), hosts)]
+  // One GraphQL request serves every repo, and it goes to a single host.
+  if (new Set(repos.map(r => r.host)).size > 1) throw new Error("all repos must be on the same GitHub host")
+  if (!demo) {
+    if (!named.length) here = repos[0]
+    else try { here = detectRepo(process.cwd(), hosts) } catch {}
   }
 } catch (e) {
   console.error(`${(e as Error).message}\n\n${USAGE}`)
@@ -61,8 +65,8 @@ try {
 
 const load = async (search?: string) => {
   const s = search ? parseSearch(search) : undefined
-  if (!demo) return fetchBuckets(repo, s)
-  const buckets = demoBuckets(repo)
+  if (!demo) return fetchBuckets(repos, s)
+  const buckets = demoBuckets(...repos)
   return s ? buckets.map(b => ({ name: b.name, prs: b.prs.filter(pr => matches(pr, s)) })) : buckets
 }
 
@@ -85,11 +89,15 @@ const withHint = (p: Promise<string>) => p.catch((e: Error) => {
   throw showGitPrompt || !needsPrompt(e.message) ? e : new Error(`${e.message} (run with --show-git-prompt to answer git's prompts)`)
 })
 
-const actions: Actions = notLocal
-  ? { checkout: () => Promise.reject(new Error(notLocal)), worktree: () => Promise.reject(new Error(notLocal)) }
-  : {
-      checkout: pr => withHint(checkoutPr(pr, repo, runGit)),
-      worktree: pr => withHint(openWorktree(pr, repo, { run: runGit, tmux: !!process.env.TMUX })),
-    }
+// Checkouts happen in the current folder, so it has to be a clone of the PR's repo.
+const local = (pr: PR, fn: () => Promise<string>) =>
+  demo ? Promise.reject(new Error("not available with --demo")) :
+  !here || key(here) !== key(pr.repo) ? Promise.reject(new Error(`run tungsten from a clone of ${repoLabel(pr.repo)} to check out its PRs`)) :
+  withHint(fn())
 
-createRoot(renderer).render(<App repo={repo} load={load} actions={actions} />)
+const actions: Actions = {
+  checkout: pr => local(pr, () => checkoutPr(pr, pr.repo, runGit)),
+  worktree: pr => local(pr, () => openWorktree(pr, pr.repo, { run: runGit, tmux: !!process.env.TMUX })),
+}
+
+createRoot(renderer).render(<App repos={repos} load={load} actions={actions} />)

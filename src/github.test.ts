@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BUCKETS, buildNumbersQuery, buildQuery, localBranch, parseSearch, relativeTime, searchQuery, toBuckets, toNumbersBucket } from "./github"
+import { BUCKETS, buildNumbersQuery, buildQuery, localBranch, numberLookups, parseSearch, relativeTime, searchQuery, toBuckets, toNumbersBucket } from "./github"
 import { parseRepo } from "./repo"
 
 const now = new Date("2026-09-15T15:00:00Z")
@@ -9,6 +9,7 @@ const node = (over: Record<string, unknown> = {}) => ({
   number: 14456,
   title: "Refreshable tokens (7/7): guided end-to-end verification scripts",
   url: "https://github.com/cli/cli/pull/14456",
+  repository: { name: "cli", owner: { login: "cli" } },
   isDraft: false,
   state: "OPEN",
   additions: 1118,
@@ -30,7 +31,7 @@ test("buildQuery searches every bucket in one request", () => {
   const q = buildQuery()
   expect(q).toContain("fragment pr on PullRequest")
   BUCKETS.forEach((_, i) => expect(q).toContain(`b${i}: search(query: $q${i}, type: ISSUE, first: 25)`))
-  expect(searchQuery(parseRepo("cli/cli"), 0)).toBe("repo:cli/cli is:pr sort:updated-desc is:open user-review-requested:@me")
+  expect(searchQuery([parseRepo("cli/cli")], 0)).toBe("repo:cli/cli is:pr sort:updated-desc is:open user-review-requested:@me")
 })
 
 test("toBuckets maps search results onto PR rows", () => {
@@ -53,7 +54,7 @@ test("toBuckets maps search results onto PR rows", () => {
     prs: [{
       number: 14456, title: "Refreshable tokens (7/7): guided end-to-end verification scripts", author: "babakks",
       state: "review", ci: "pass", review: "pending", additions: 1118, deletions: 0, updated: "13h", stale: false,
-      url: "https://github.com/cli/cli/pull/14456", branch: "babakks/refreshable-tokens-7",
+      url: "https://github.com/cli/cli/pull/14456", repo: { host: "github.com", owner: "cli", name: "cli" }, branch: "babakks/refreshable-tokens-7",
     }],
   })
   const row = (i: number) => buckets[i]!.prs[0]!
@@ -87,10 +88,11 @@ test("localBranch follows gh: a fork's branch named like the default branch gets
 
 test("parseSearch splits words, @authors and #numbers; searchQuery adds them to every bucket", () => {
   const s = parseSearch("  fix @babakks  #123 token# ")
-  expect(s).toEqual({ words: ["fix", "token#"], authors: ["babakks"], numbers: [123] })
+  expect(s).toEqual({ words: ["fix", "token#"], authors: ["babakks"], numbers: [{ number: 123 }] })
   expect(parseSearch("")).toEqual({ words: [], authors: [], numbers: [] })
+  expect(parseSearch("go-gh#7 cli/cli#8 a/b/c#9").numbers).toEqual([{ number: 7, repo: "go-gh" }, { number: 8, repo: "cli/cli" }])
 
-  const repo = parseRepo("cli/cli")
+  const repo = [parseRepo("cli/cli")]
   expect(searchQuery(repo, 5, s)).toBe("repo:cli/cli is:pr sort:updated-desc is:open fix token# in:title author:babakks")
   expect(searchQuery(repo, 5, parseSearch("@babakks"))).toBe("repo:cli/cli is:pr sort:updated-desc is:open author:babakks")
   // GitHub would OR a second author: into author:@me, so your own buckets leave it out.
@@ -107,10 +109,10 @@ test("an @author search empties your own buckets unless the author is you", () =
 })
 
 test("#numbers are looked up directly and narrowed by the other terms", () => {
-  expect(buildNumbersQuery([12, 34])).toContain("repository(owner: $owner, name: $name) { n12: pullRequest(number: 12) { ...pr } n34: pullRequest(number: 34) { ...pr } }")
+  expect(buildNumbersQuery([{ numbers: [12, 34] }])).toContain("r0: repository(owner: $owner0, name: $name0) { n12: pullRequest(number: 12) { ...pr } n34: pullRequest(number: 34) { ...pr } }")
 
   const res = {
-    data: { repository: { n1: node({ number: 1, title: "Fix tokens" }), n2: node({ number: 2, title: "Docs" }), n3: null } },
+    data: { r0: { n1: node({ number: 1, title: "Fix tokens" }), n2: node({ number: 2, title: "Docs" }), n3: null } },
     errors: [{ type: "NOT_FOUND", message: "Could not resolve to a PullRequest with the number of 3." }],
   }
   expect(toNumbersBucket(res, parseSearch("#1 #2 #3"), now).prs.map(p => p.number)).toEqual([1, 2])
@@ -118,4 +120,33 @@ test("#numbers are looked up directly and narrowed by the other terms", () => {
   expect(toNumbersBucket(res, parseSearch("#1 @someone"), now)).toEqual({ name: "Search results", prs: [] })
   expect(toNumbersBucket(res, parseSearch("#1 @someone @BABAKKS"), now).prs.map(p => p.number)).toEqual([1])
   expect(() => toNumbersBucket({ errors: [{ type: "FORBIDDEN", message: "nope" }] }, parseSearch("#1"), now)).toThrow("nope")
+})
+
+test("several repos: one search ORs their repo: terms, rows carry their repo", () => {
+  const repos = ["movablevoice/workfone", "movablevoice/workfone-ios"].map(r => parseRepo(r))
+  expect(searchQuery(repos, 5, parseSearch("fix"))).toBe("repo:movablevoice/workfone repo:movablevoice/workfone-ios is:pr sort:updated-desc is:open fix in:title")
+
+  const ios = node({ number: 7, url: "https://github.com/movablevoice/workfone-ios/pull/7", repository: { name: "workfone-ios", owner: { login: "movablevoice" } } })
+  expect(toBuckets({ data: { b5: search(ios) } }, now)[5]!.prs[0]!.repo).toEqual(repos[1]!)
+})
+
+test("#numbers across several repos: every repo, or only the one named", () => {
+  const repos = ["movablevoice/workfone", "movablevoice/workfone-ios", "other/workfone"].map(r => parseRepo(r))
+  const names = (q: string) => numberLookups(repos, parseSearch(q).numbers).map(l => `${l.repo.owner}/${l.repo.name} ${l.numbers}`)
+  expect(names("#1 #2")).toEqual(["movablevoice/workfone 1,2", "movablevoice/workfone-ios 1,2", "other/workfone 1,2"])
+  expect(names("workfone-ios#1 #2")).toEqual(["movablevoice/workfone 2", "movablevoice/workfone-ios 1,2", "other/workfone 2"])
+  expect(names("Movablevoice/Workfone#1")).toEqual(["movablevoice/workfone 1"])
+  expect(names("workfone#1")).toEqual(["movablevoice/workfone 1", "other/workfone 1"])
+  expect(names("nope#1")).toEqual([])
+
+  const q = buildNumbersQuery([{ numbers: [1] }, { numbers: [1, 2] }])
+  expect(q).toContain("query($owner0: String!, $name0: String!, $owner1: String!, $name1: String!)")
+  expect(q).toContain("r1: repository(owner: $owner1, name: $name1) { n1: pullRequest(number: 1) { ...pr } n2: pullRequest(number: 2) { ...pr } }")
+
+  // The same number from two repos is two PRs; a REPO#n term keeps only that repo's.
+  const at = (name: string, number: number) => node({ number, url: `https://github.com/movablevoice/${name}/pull/${number}`, repository: { name, owner: { login: "movablevoice" } } })
+  const res = { data: { r0: { n1: at("workfone", 1) }, r1: { n1: at("workfone-ios", 1), n2: at("workfone-ios", 2) } } }
+  const found = (q: string) => toNumbersBucket(res, parseSearch(q), now).prs.map(p => `${p.repo.name}#${p.number}`)
+  expect(found("#1 #2")).toEqual(["workfone#1", "workfone-ios#1", "workfone-ios#2"])
+  expect(found("workfone-ios#1")).toEqual(["workfone-ios#1"])
 })

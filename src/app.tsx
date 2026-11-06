@@ -28,7 +28,9 @@ const bucketId = (i: number) => `bucket-${i}`
 const bucketBoxId = (i: number) => `bucket-box-${i}`
 // Scoped to the bucket: one PR can sit in two buckets (say review-requested and open),
 // and each copy needs its own id to be selectable and scrollable on its own.
-const prId = (bucket: number, pr: PR) => `pr-${bucket}-${pr.number}`
+// The repo too: with several repos, two PRs can share a number.
+const prKey = (pr: PR) => `${repoLabel(pr.repo)}#${pr.number}`
+const prId = (bucket: number, pr: PR) => `pr-${bucket}-${prKey(pr)}`
 
 function openInBrowser(url: string) {
   const [cmd, args] =
@@ -42,9 +44,17 @@ function openInBrowser(url: string) {
 const fit = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(0, n - 1)) + "…" : s.padEnd(n))
 
 // Fixed-width columns are padded strings, so rows line up without per-cell layout.
-const AUTHOR_W = 20, CHANGES_W = 11, UPDATED_W = 4
-const FIXED = 7 + 2 + AUTHOR_W + 2 + 1 + 2 + 1 + 2 + CHANGES_W + 2 + UPDATED_W
+// With several repos the author column also names the PR's repo, so it's wider.
+const AUTHOR_W = 20, AUTHOR_REPO_W = 36, CHANGES_W = 11, UPDATED_W = 4
+const fixed = (authorW: number) => 7 + 2 + authorW + 2 + 1 + 2 + 1 + 2 + CHANGES_W + 2 + UPDATED_W
 const CHROME = 2 + 2 + 1 // bucket border, row padding, scrollbar
+
+// How a row names its repo: just REPO, unless two of the repos share that name.
+function repoTags(repos: Repo[]): (r: Repo) => string {
+  const name = (r: Repo) => r.name.toLowerCase()
+  const clash = (r: Repo) => repos.filter(o => name(o) === name(r)).length > 1
+  return r => (clash(r) ? `${r.owner}/${r.name}` : r.name)
+}
 
 // Each resolves to a success message or rejects with the error to show.
 export interface Actions {
@@ -54,7 +64,7 @@ export interface Actions {
 
 const printable = (s: string) => s.length > 0 && !/[\x00-\x1f\x7f]/.test(s)
 
-export function App({ repo, load, actions }: { repo: Repo; load: (search?: string) => Promise<Bucket[]>; actions: Actions }) {
+export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: string) => Promise<Bucket[]>; actions: Actions }) {
   const renderer = useRenderer()
   const { width } = useTerminalDimensions()
   const scroll = useRef<ScrollBoxRenderable>(null)
@@ -201,13 +211,18 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
     }
   })
 
-  const titleW = Math.max(12, width - FIXED - CHROME)
+  const multi = repos.length > 1
+  const authorW = multi ? AUTHOR_REPO_W : AUTHOR_W
+  const tag = useMemo(() => repoTags(repos), [repos])
+  const titleW = Math.max(12, width - fixed(authorW) - CHROME)
+  const all = repos.map(repoLabel).join(", ")
+  const label = all.length <= width / 2 ? all : `${repos.length} repos`
 
   return (
     <box style={{ flexDirection: "column", width: "100%", height: "100%", backgroundColor: C.bg }}>
       <box style={{ height: 1, paddingLeft: 1, flexDirection: "row", justifyContent: "space-between", paddingRight: 1 }}>
-        <text fg={C.text}><b>Inbox</b>{search && <span fg={C.muted}>{fit(`  / ${search}`, Math.max(0, width - repoLabel(repo).length - 20))}</span>}</text>
-        <text fg={C.muted}>{loading && <span fg={C.faint}>loading…  </span>}{repoLabel(repo)}</text>
+        <text fg={C.text}><b>Inbox</b>{search && <span fg={C.muted}>{fit(`  / ${search}`, Math.max(0, width - label.length - 20))}</span>}</text>
+        <text fg={C.muted}>{loading && <span fg={C.faint}>loading…  </span>}{label}</text>
       </box>
 
       {(error || notice) && (
@@ -242,7 +257,7 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
                 </text>
               </box>
               {open && b.prs.map(pr => (
-                <PrRow key={pr.number} id={prId(i, pr)} pr={pr} titleW={titleW} selected={current?.id === prId(i, pr)} />
+                <PrRow key={prKey(pr)} id={prId(i, pr)} pr={pr} repoTag={multi ? tag(pr.repo) : undefined} authorW={authorW} titleW={titleW} selected={current?.id === prId(i, pr)} />
               ))}
             </box>
           )
@@ -264,7 +279,7 @@ export function App({ repo, load, actions }: { repo: Repo; load: (search?: strin
   )
 }
 
-function PrRow({ id, pr, titleW, selected }: { id: string; pr: PR; titleW: number; selected: boolean }) {
+function PrRow({ id, pr, repoTag, authorW, titleW, selected }: { id: string; pr: PR; repoTag?: string; authorW: number; titleW: number; selected: boolean }) {
   const [stateGlyph, stateColor] = STATE[pr.state]
   const [ciGlyph, ciColor] = STATUS[pr.ci]
   const [revGlyph, revColor] = STATUS[pr.review]
@@ -276,7 +291,7 @@ function PrRow({ id, pr, titleW, selected }: { id: string; pr: PR; titleW: numbe
       <text fg={C.text}>
         <span fg={C.blue}>{selected ? "▌" : " "}</span> <span fg={C.blue}>•</span> <span fg={stateColor}>{stateGlyph}</span>
         {"  "}{selected ? <b>{fit(pr.title, titleW)}</b> : fit(pr.title, titleW)}
-        {"  "}<span fg={C.muted}>{fit(`${pr.author} #${pr.number}`, AUTHOR_W)}</span>
+        {"  "}<span fg={C.muted}>{fit(`${pr.author} ${repoTag ?? ""}#${pr.number}`, authorW)}</span>
         {"  "}<span fg={ciColor}>{ciGlyph}</span>
         {"  "}<span fg={revColor}>{revGlyph}</span>
         {"  "}{changesPad}<span fg={C.green}>{add}</span><span fg={C.muted}>/</span><span fg={C.red}>{del}</span>

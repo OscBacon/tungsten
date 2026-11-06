@@ -1,5 +1,5 @@
 import type { Bucket, PR, State, Status } from "./data"
-import type { Repo } from "./repo"
+import { normalizeHost, type Repo } from "./repo"
 import { run } from "./run"
 
 export const PAGE_SIZE = 25
@@ -22,23 +22,38 @@ export const BUCKETS = [
 export interface Search {
   words: string[]
   authors: string[]
-  numbers: number[]
+  numbers: PrRef[]
+}
+
+// #123 is that number in any repo shown; REPO#123 or OWNER/REPO#123 only in that one.
+export interface PrRef {
+  number: number
+  repo?: string
 }
 
 export function parseSearch(input: string): Search {
   const search: Search = { words: [], authors: [], numbers: [] }
   for (const term of input.trim().split(/\s+/).filter(Boolean)) {
+    const ref = term.match(/^([\w.-]+(?:\/[\w.-]+)?)?#(\d+)$/)
     if (/^@[^@\s]+$/.test(term)) search.authors.push(term.slice(1))
-    else if (/^#\d+$/.test(term)) search.numbers.push(Number(term.slice(1)))
+    else if (ref) search.numbers.push(ref[1] ? { number: Number(ref[2]), repo: ref[1] } : { number: Number(ref[2]) })
     else search.words.push(term)
   }
   return search
 }
 
+// Whether a REPO or OWNER/REPO typed in a search names this repo.
+export function repoMatches(repo: Repo, typed: string): boolean {
+  const t = typed.toLowerCase()
+  return t === (t.includes("/") ? `${repo.owner}/${repo.name}` : repo.name).toLowerCase()
+}
+
+const refMatches = (ref: PrRef, repo: Repo, number: number) => ref.number === number && (!ref.repo || repoMatches(repo, ref.repo))
+
 // The same test done locally, for --demo and for PRs looked up by number.
 export function matches(pr: PR, s: Search): boolean {
   const title = pr.title.toLowerCase(), author = pr.author.toLowerCase()
-  return (s.numbers.length === 0 || s.numbers.includes(pr.number))
+  return (s.numbers.length === 0 || s.numbers.some(ref => refMatches(ref, pr.repo, pr.number)))
     && s.words.every(w => title.includes(w.toLowerCase()))
     && (s.authors.length === 0 || s.authors.some(a => author === a.toLowerCase()))
 }
@@ -53,10 +68,11 @@ function searchTerms(s: Search, mine: boolean): string {
   return [...s.words, ...(s.words.length ? ["in:title"] : []), ...authors].join(" ")
 }
 
-export const searchQuery = (repo: Repo, i: number, search?: Search) =>
-  [`repo:${repo.owner}/${repo.name} is:pr sort:updated-desc ${BUCKETS[i]!.query}`, search && searchTerms(search, isMine(i))].filter(Boolean).join(" ")
+// GitHub ORs repo: qualifiers, so one search covers every repo, sorted and counted together.
+export const searchQuery = (repos: Repo[], i: number, search?: Search) =>
+  [`${repos.map(r => `repo:${r.owner}/${r.name}`).join(" ")} is:pr sort:updated-desc ${BUCKETS[i]!.query}`, search && searchTerms(search, isMine(i))].filter(Boolean).join(" ")
 
-const FIELDS = `number title url isDraft state additions deletions updatedAt reviewDecision
+const FIELDS = `number title url repository { name owner { login } } isDraft state additions deletions updatedAt reviewDecision
   author { login } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   headRefName isCrossRepository headRepositoryOwner { login } baseRepository { defaultBranchRef { name } }`
 
@@ -67,16 +83,26 @@ export function buildQuery(): string {
   return `fragment pr on PullRequest { ${FIELDS} }\nquery(${vars}) {\n  viewer { login }\n  ${searches.join("\n  ")}\n}`
 }
 
-// Search doesn't match PR numbers, so #123 looks each one up directly.
-export function buildNumbersQuery(numbers: number[]): string {
-  const prs = numbers.map(n => `n${n}: pullRequest(number: ${n}) { ...pr }`)
-  return `fragment pr on PullRequest { ${FIELDS} }\nquery($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) { ${prs.join(" ")} }\n}`
+// The numbers to look up in each repo; repos with none are left out.
+export function numberLookups(repos: Repo[], refs: PrRef[]): { repo: Repo; numbers: number[] }[] {
+  return repos
+    .map(repo => ({ repo, numbers: [...new Set(refs.filter(r => !r.repo || repoMatches(repo, r.repo)).map(r => r.number))] }))
+    .filter(l => l.numbers.length > 0)
+}
+
+// Search doesn't match PR numbers, so #123 looks each one up directly, in every repo it may be in.
+export function buildNumbersQuery(lookups: { numbers: number[] }[]): string {
+  const vars = lookups.map((_, i) => `$owner${i}: String!, $name${i}: String!`).join(", ")
+  const repos = lookups.map(({ numbers }, i) =>
+    `r${i}: repository(owner: $owner${i}, name: $name${i}) { ${numbers.map(n => `n${n}: pullRequest(number: ${n}) { ...pr }`).join(" ")} }`)
+  return `fragment pr on PullRequest { ${FIELDS} }\nquery(${vars}) {\n  ${repos.join("\n  ")}\n}`
 }
 
 interface PrNode {
   number: number
   title: string
   url: string
+  repository: { name: string; owner: { login: string } }
   isDraft: boolean
   state: string // OPEN | CLOSED | MERGED
   additions: number
@@ -102,7 +128,7 @@ export interface SearchResponse {
 }
 
 export interface NumbersResponse {
-  data?: { repository: Record<string, unknown> | null } | null
+  data?: Record<string, Record<string, unknown> | null> | null // r0, r1, ... holding n<number>
   errors?: { message: string; type?: string }[]
 }
 
@@ -154,6 +180,8 @@ function toPR(n: PrNode, now: Date): PR {
     updated: relativeTime(n.updatedAt, now),
     stale: !merged && now.getTime() - Date.parse(n.updatedAt) > STALE_DAYS * 86400_000,
     url: n.url,
+    // The API host isn't in the response, but it's the one in the PR's url.
+    repo: { host: normalizeHost(new URL(n.url).hostname), owner: n.repository.owner.login, name: n.repository.name },
     branch: localBranch(n),
   }
 }
@@ -174,8 +202,8 @@ export function toNumbersBucket(res: NumbersResponse, search: Search, now = new 
   // A missing number is a NOT_FOUND error next to the PRs that were found.
   const errors = res.errors?.filter(e => e.type !== "NOT_FOUND") ?? []
   if (errors.length) throw new Error(errors.map(e => e.message).join("; "))
-  const prs = search.numbers
-    .map(n => res.data?.repository?.[`n${n}`])
+  const prs = Object.values(res.data ?? {})
+    .flatMap(repo => Object.values(repo ?? {}))
     .filter(isPrNode)
     .map(n => toPR(n, now))
     .filter(pr => matches(pr, search))
@@ -192,9 +220,9 @@ async function gh(args: string[]) {
 }
 
 // gh handles auth and the API host, so no token ever passes through here.
-async function graphql<T extends { errors?: unknown[] }>(repo: Repo, fields: Record<string, string>): Promise<T> {
+async function graphql<T extends { errors?: unknown[] }>(host: string, fields: Record<string, string>): Promise<T> {
   const { code, stdout, stderr } = await gh([
-    "api", "graphql", "--hostname", repo.host,
+    "api", "graphql", "--hostname", host,
     ...Object.entries(fields).flatMap(([k, v]) => ["-f", `${k}=${v}`]),
   ])
 
@@ -209,14 +237,21 @@ async function graphql<T extends { errors?: unknown[] }>(repo: Repo, fields: Rec
   throw new Error(stderr.trim().split("\n")[0] || `gh exited with code ${code}`)
 }
 
-export async function fetchBuckets(repo: Repo, search?: Search): Promise<Bucket[]> {
+// The repos all share a host (see index.tsx), so one request covers them.
+export async function fetchBuckets(repos: Repo[], search?: Search): Promise<Bucket[]> {
+  const host = repos[0]!.host
   if (search?.numbers.length) {
-    const res = await graphql<NumbersResponse>(repo, { query: buildNumbersQuery(search.numbers), owner: repo.owner, name: repo.name })
+    const lookups = numberLookups(repos, search.numbers)
+    if (lookups.length === 0) return [{ name: "Search results", prs: [] }]
+    const res = await graphql<NumbersResponse>(host, {
+      query: buildNumbersQuery(lookups),
+      ...Object.fromEntries(lookups.flatMap(({ repo }, i) => [[`owner${i}`, repo.owner], [`name${i}`, repo.name]])),
+    })
     return [toNumbersBucket(res, search)]
   }
-  const res = await graphql<SearchResponse>(repo, {
+  const res = await graphql<SearchResponse>(host, {
     query: buildQuery(),
-    ...Object.fromEntries(BUCKETS.map((_, i) => [`q${i}`, searchQuery(repo, i, search)])),
+    ...Object.fromEntries(BUCKETS.map((_, i) => [`q${i}`, searchQuery(repos, i, search)])),
   })
   return toBuckets(res, new Date(), search)
 }

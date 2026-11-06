@@ -15,7 +15,7 @@ export interface Repo {
 
 export const DEFAULT_HOST = "github.com"
 
-const normalizeHost = (h: string) => h.toLowerCase().replace(/^www\./, "")
+export const normalizeHost = (h: string) => h.toLowerCase().replace(/^www\./, "")
 
 // Accepts gh's [HOST/]OWNER/REPO format.
 export function parseRepo(s: string, fallbackHost = DEFAULT_HOST): Repo {
