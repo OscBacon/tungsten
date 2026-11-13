@@ -3,18 +3,21 @@ import { normalizeHost, type Repo } from "./repo"
 import { run } from "./run"
 
 export const PAGE_SIZE = 25
-const STALE_DAYS = 14
+
+const mine = (pr: PR, me: string) => pr.author.toLowerCase() === me
 
 // One GitHub search per bucket; searchQuery() prepends the repo and sort.
-export const BUCKETS = [
-  { name: "Needs your review", query: "is:open user-review-requested:@me" },
-  { name: "Returned to you", query: "is:open author:@me review:changes_requested" },
-  { name: "Approved", query: "is:open author:@me review:approved" },
+// `has` is the same test done locally (`me` is your lowercased login), so a PR that changes
+// can move between buckets right away; keep the two in step.
+export const BUCKETS: { name: string; query: string; has: (pr: PR, me: string) => boolean }[] = [
+  { name: "Needs your review", query: "is:open user-review-requested:@me", has: (pr, me) => pr.open && pr.reviewers.includes(me) },
+  { name: "Returned to you", query: "is:open author:@me review:changes_requested", has: (pr, me) => pr.open && mine(pr, me) && pr.review === "fail" },
+  { name: "Approved", query: "is:open author:@me review:approved", has: (pr, me) => pr.open && mine(pr, me) && pr.review === "pass" },
   // Not `review:required`: that never matches in repos without required reviews.
-  { name: "Waiting for reviewers", query: "is:open author:@me -is:draft -review:approved -review:changes_requested" },
-  { name: "Drafts", query: "is:open author:@me draft:true" },
-  { name: "Open", query: "is:open" }, // everyone's, not just yours
-  { name: "Recently merged", query: "is:merged author:@me" },
+  { name: "Waiting for reviewers", query: "is:open author:@me -is:draft -review:approved -review:changes_requested", has: (pr, me) => pr.open && mine(pr, me) && !pr.draft && pr.review === "pending" },
+  { name: "Drafts", query: "is:open author:@me draft:true", has: (pr, me) => pr.open && mine(pr, me) && pr.draft },
+  { name: "Open", query: "is:open", has: pr => pr.open }, // everyone's, not just yours
+  { name: "Recently merged", query: "is:merged author:@me", has: (pr, me) => pr.state === "merged" && mine(pr, me) },
 ]
 
 // What the user typed after "/": words match titles, @login an author, #123 a PR number.
@@ -74,6 +77,7 @@ export const searchQuery = (repos: Repo[], i: number, search?: Search) =>
 
 const FIELDS = `number title url repository { name owner { login } } isDraft state additions deletions updatedAt reviewDecision
   author { login } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+  reviewRequests(first: 25) { nodes { requestedReviewer { ... on User { login } } } }
   headRefName isCrossRepository headRepositoryOwner { login } baseRepository { defaultBranchRef { name } }`
 
 // Searches are passed as variables, so repo names never need escaping in the query text.
@@ -111,6 +115,7 @@ interface PrNode {
   reviewDecision: string | null // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED
   author: { login: string } | null // null for deleted accounts
   commits: { nodes: ({ commit: { statusCheckRollup: { state: string } | null } } | null)[] }
+  reviewRequests: { nodes: ({ requestedReviewer: { login?: string } | null } | null)[] } // teams have no login
   headRefName: string
   isCrossRepository: boolean
   headRepositoryOwner: { login: string } | null // null once the fork is deleted
@@ -137,15 +142,6 @@ const isPrNode = (n: unknown): n is PrNode => typeof n === "object" && n !== nul
 
 const CI: Record<string, Status> = { SUCCESS: "pass", FAILURE: "fail", ERROR: "fail", PENDING: "running" }
 
-export function relativeTime(iso: string, now: Date): string {
-  const s = Math.max(0, (now.getTime() - Date.parse(iso)) / 1000)
-  if (s < 60) return "now"
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86400) return `${Math.floor(s / 3600)}h`
-  if (s < 365 * 86400) return `${Math.floor(s / 86400)}d`
-  return `${Math.floor(s / (365 * 86400))}y`
-}
-
 // Like gh pr checkout: a fork's branch named after the default branch would clash with it,
 // so it gets the fork owner as a prefix.
 export function localBranch(n: Pick<PrNode, "headRefName" | "isCrossRepository" | "headRepositoryOwner" | "baseRepository">): string {
@@ -153,7 +149,7 @@ export function localBranch(n: Pick<PrNode, "headRefName" | "isCrossRepository" 
   return clashes ? `${n.headRepositoryOwner?.login ?? "ghost"}/${n.headRefName}` : n.headRefName
 }
 
-function toPR(n: PrNode, now: Date): PR {
+function toPR(n: PrNode): PR {
   const merged = n.state === "MERGED"
   const state: State =
     merged ? "merged" :
@@ -177,8 +173,10 @@ function toPR(n: PrNode, now: Date): PR {
     review,
     additions: n.additions,
     deletions: n.deletions,
-    updated: relativeTime(n.updatedAt, now),
-    stale: !merged && now.getTime() - Date.parse(n.updatedAt) > STALE_DAYS * 86400_000,
+    updatedAt: n.updatedAt,
+    open: n.state === "OPEN",
+    draft: n.isDraft,
+    reviewers: n.reviewRequests.nodes.flatMap(r => r?.requestedReviewer?.login?.toLowerCase() ?? []),
     url: n.url,
     // The API host isn't in the response, but it's the one in the PR's url.
     repo: { host: normalizeHost(new URL(n.url).hostname), owner: n.repository.owner.login, name: n.repository.name },
@@ -186,28 +184,32 @@ function toPR(n: PrNode, now: Date): PR {
   }
 }
 
-export function toBuckets(res: SearchResponse, now = new Date(), search?: Search): Bucket[] {
+export function toBuckets(res: SearchResponse, search?: Search): Bucket[] {
   if (res.errors?.length) throw new Error(res.errors.map(e => e.message).join("; "))
-  const viewer = (res.data?.viewer as { login: string } | undefined)?.login.toLowerCase()
+  const viewer = (res.data?.viewer as { login: string } | undefined)?.login.toLowerCase() ?? ""
   const notMe = !!search?.authors.length && !search.authors.some(a => a.toLowerCase() === viewer)
   return BUCKETS.map((b, i) => {
-    if (notMe && isMine(i)) return { name: b.name, total: 0, prs: [] }
+    if (notMe && isMine(i)) return { name: b.name, total: 0, prs: [], accepts: () => false }
     const result = res.data?.[`b${i}`] as SearchResult | null | undefined
-    return { name: b.name, total: result?.issueCount ?? 0, prs: (result?.nodes ?? []).filter(isPrNode).map(n => toPR(n, now)) }
+    const accepts = (pr: PR) => b.has(pr, viewer) && (!search || matches(pr, search))
+    return { name: b.name, total: result?.issueCount ?? 0, prs: (result?.nodes ?? []).filter(isPrNode).map(toPR), accepts }
   })
 }
 
-// One "Search results" bucket with the PRs that exist, narrowed by the other terms.
-export function toNumbersBucket(res: NumbersResponse, search: Search, now = new Date()): Bucket {
-  // A missing number is a NOT_FOUND error next to the PRs that were found.
+// The PRs a lookup by number found; a missing number is a NOT_FOUND error next to them.
+export function toPrs(res: NumbersResponse): PR[] {
   const errors = res.errors?.filter(e => e.type !== "NOT_FOUND") ?? []
   if (errors.length) throw new Error(errors.map(e => e.message).join("; "))
-  const prs = Object.values(res.data ?? {})
+  return Object.values(res.data ?? {})
     .flatMap(repo => Object.values(repo ?? {}))
     .filter(isPrNode)
-    .map(n => toPR(n, now))
-    .filter(pr => matches(pr, search))
-  return { name: "Search results", prs }
+    .map(toPR)
+}
+
+// One "Search results" bucket with the PRs that exist, narrowed by the other terms.
+export function searchResults(prs: PR[], search: Search): Bucket {
+  const accepts = (pr: PR) => matches(pr, search)
+  return { name: "Search results", prs: prs.filter(accepts), accepts }
 }
 
 async function gh(args: string[]) {
@@ -237,21 +239,60 @@ async function graphql<T extends { errors?: unknown[] }>(host: string, fields: R
   throw new Error(stderr.trim().split("\n")[0] || `gh exited with code ${code}`)
 }
 
+// Looks PRs up by number: for #123 searches, and to refresh the PRs that changed (see poll.ts).
+export async function fetchPrs(host: string, lookups: { repo: Repo; numbers: number[] }[]): Promise<PR[]> {
+  if (lookups.length === 0) return []
+  const res = await graphql<NumbersResponse>(host, {
+    query: buildNumbersQuery(lookups),
+    ...Object.fromEntries(lookups.flatMap(({ repo }, i) => [[`owner${i}`, repo.owner], [`name${i}`, repo.name]])),
+  })
+  return toPrs(res)
+}
+
 // The repos all share a host (see index.tsx), so one request covers them.
 export async function fetchBuckets(repos: Repo[], search?: Search): Promise<Bucket[]> {
   const host = repos[0]!.host
-  if (search?.numbers.length) {
-    const lookups = numberLookups(repos, search.numbers)
-    if (lookups.length === 0) return [{ name: "Search results", prs: [] }]
-    const res = await graphql<NumbersResponse>(host, {
-      query: buildNumbersQuery(lookups),
-      ...Object.fromEntries(lookups.flatMap(({ repo }, i) => [[`owner${i}`, repo.owner], [`name${i}`, repo.name]])),
-    })
-    return [toNumbersBucket(res, search)]
-  }
+  if (search?.numbers.length) return [searchResults(await fetchPrs(host, numberLookups(repos, search.numbers)), search)]
   const res = await graphql<SearchResponse>(host, {
     query: buildQuery(),
     ...Object.fromEntries(BUCKETS.map((_, i) => [`q${i}`, searchQuery(repos, i, search)])),
   })
-  return toBuckets(res, new Date(), search)
+  return toBuckets(res, search)
+}
+
+export const PULLS_PAGE = 10
+
+export interface PullsPage {
+  etag?: string
+  pulls: { number: number; updatedAt: string }[] // most recently updated first
+}
+
+// `gh api --include` output: a status line, headers, a blank line, then the body.
+export function parseHttp(out: string): { status: number; headers: Record<string, string>; body: string } | undefined {
+  const end = out.search(/\r?\n\r?\n/)
+  const [first, ...lines] = (end < 0 ? out : out.slice(0, end)).split(/\r?\n/)
+  const status = first?.match(/^HTTP\/\S+ (\d{3})/)?.[1]
+  if (!status) return undefined
+  const headers: Record<string, string> = {}
+  for (const line of lines) {
+    const colon = line.indexOf(":")
+    if (colon > 0) headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim()
+  }
+  return { status: Number(status), headers, body: end < 0 ? "" : out.slice(end).trimStart() }
+}
+
+// The repo's most recently updated PRs, over REST because it takes an ETag: an unchanged
+// list is a 304 that doesn't count against the rate limit, and resolves to undefined.
+export async function fetchPullsPage(repo: Repo, etag?: string): Promise<PullsPage | undefined> {
+  const { code, stdout, stderr } = await gh([
+    "api", "--include", "--hostname", repo.host,
+    ...(etag ? ["-H", `If-None-Match: ${etag}`] : []),
+    `repos/${repo.owner}/${repo.name}/pulls?state=all&sort=updated&direction=desc&per_page=${PULLS_PAGE}`,
+  ])
+  // gh exits non-zero on a 304 too, so the status line decides.
+  const res = parseHttp(stdout)
+  if (res?.status === 304) return undefined
+  if (res?.status !== 200) throw new Error(stderr.trim().split("\n")[0] || `gh exited with code ${code}`)
+  const pulls = JSON.parse(res.body) as { number: number; updated_at: string }[]
+  return { etag: res.headers.etag, pulls: pulls.map(p => ({ number: p.number, updatedAt: p.updated_at })) }
 }

@@ -1,8 +1,9 @@
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
 import { spawn } from "node:child_process"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { Bucket, PR, State, Status } from "./data"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { isStale, prKey, relativeTime, type Bucket, type PR, type State, type Status } from "./data"
+import { useInbox, type Watch } from "./inbox"
 import { repoLabel, type Repo } from "./repo"
 
 const C = {
@@ -24,13 +25,12 @@ type Item =
   | { kind: "bucket"; id: string; bucket: number }
   | { kind: "pr"; id: string; bucket: number; pr: PR }
 
-const bucketId = (i: number) => `bucket-${i}`
-const bucketBoxId = (i: number) => `bucket-box-${i}`
+// By name, not position: the "Just merged" bucket comes and goes, shifting the ones below it.
+const bucketId = (b: Bucket) => `bucket-${b.name}`
+const bucketBoxId = (b: Bucket) => `bucket-box-${b.name}`
 // Scoped to the bucket: one PR can sit in two buckets (say review-requested and open),
 // and each copy needs its own id to be selectable and scrollable on its own.
-// The repo too: with several repos, two PRs can share a number.
-const prKey = (pr: PR) => `${repoLabel(pr.repo)}#${pr.number}`
-const prId = (bucket: number, pr: PR) => `pr-${bucket}-${prKey(pr)}`
+const prId = (b: Bucket, pr: PR) => `pr-${b.name}-${prKey(pr)}`
 
 function openInBrowser(url: string) {
   const [cmd, args] =
@@ -64,18 +64,27 @@ export interface Actions {
 
 const printable = (s: string) => s.length > 0 && !/[\x00-\x1f\x7f]/.test(s)
 
-export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: string) => Promise<Bucket[]>; actions: Actions }) {
+// Relative times are worked out when drawn, so they keep aging while the app is open.
+function useNow(everyMs = 60_000) {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), everyMs)
+    return () => clearInterval(timer)
+  }, [everyMs])
+  return now
+}
+
+// justMergedMs: how long a PR merged while watching stays listed; tests shorten it.
+export function App({ repos, load, watch, actions, justMergedMs }: { repos: Repo[]; load: (search?: string) => Promise<Bucket[]>; watch?: Watch; actions: Actions; justMergedMs?: number }) {
   const renderer = useRenderer()
   const { width } = useTerminalDimensions()
+  const now = useNow()
   const scroll = useRef<ScrollBoxRenderable>(null)
-  const [buckets, setBuckets] = useState<Bucket[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>()
+  const { buckets, loading, error, search, applySearch: apply, refresh } = useInbox(load, watch, justMergedMs)
   // By name, so a bucket stays collapsed across refreshes and searches that change the bucket list.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [cursorId, setCursorId] = useState<string>()
   const lastIndex = useRef(0)
-  const [search, setSearch] = useState("") // applied: loads and refreshes use it
   // The search being typed, while the "/" prompt is open. Keys can arrive faster than renders
   // (typing fast, pasting), so each one reads and writes the ref, not a stale render's value.
   const [input, setInputState] = useState<string>()
@@ -84,41 +93,15 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
   const [notice, setNotice] = useState<{ text: string; color: string }>()
   const [busy, setBusy] = useState(false)
 
-  // The last unsearched buckets, so clearing a search puts them back without a fetch; r refreshes them.
-  const home = useRef<Bucket[]>(undefined)
-
-  // A failed refresh keeps the last good data on screen. Only the latest load lands,
-  // so a slow one can't overwrite the results of a newer search.
-  const latest = useRef(0)
-  const refresh = useCallback((search: string) => {
-    const id = ++latest.current
-    setLoading(true)
-    load(search || undefined)
-      .then(b => {
-        if (id !== latest.current) return
-        setBuckets(b)
-        setError(undefined)
-        if (!search) home.current = b
-      }, (e: unknown) => { if (id === latest.current) setError(e instanceof Error ? e.message : String(e)) })
-      .finally(() => { if (id === latest.current) setLoading(false) })
-  }, [load])
-  useEffect(() => refresh(""), [refresh])
-
   const applySearch = (next: string) => {
-    if (next === search) return
-    setSearch(next)
+    if (!apply(next)) return
     setCursorId(undefined) // new results: start from the top
     lastIndex.current = 0
-    if (next || !home.current) return refresh(next)
-    latest.current++ // drop a search still loading
-    setBuckets(home.current)
-    setError(undefined)
-    setLoading(false)
   }
 
   const items = useMemo<Item[]>(() => buckets.flatMap((b, i) => [
-    { kind: "bucket" as const, id: bucketId(i), bucket: i },
-    ...(collapsed.has(b.name) ? [] : b.prs.map(pr => ({ kind: "pr" as const, id: prId(i, pr), bucket: i, pr }))),
+    { kind: "bucket" as const, id: bucketId(b), bucket: i },
+    ...(collapsed.has(b.name) ? [] : b.prs.map(pr => ({ kind: "pr" as const, id: prId(b, pr), bucket: i, pr }))),
   ]), [buckets, collapsed])
 
   // The cursor follows an id so it stays on the same PR across refreshes;
@@ -135,7 +118,7 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
     const bucket = buckets[current.bucket]!
     const rows = collapsed.has(bucket.name) ? [] : bucket.prs
     const atBucketEnd = rows.length === 0 || (current.kind === "pr" && current.pr === rows.at(-1))
-    if (atBucketEnd) box.scrollChildIntoView(bucketBoxId(current.bucket))
+    if (atBucketEnd) box.scrollChildIntoView(bucketBoxId(bucket))
     box.scrollChildIntoView(current.id)
   }, [current?.id, buckets, collapsed])
 
@@ -148,7 +131,7 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
   const jumpBucket = (delta: number) => {
     if (!current) return
     const target = Math.min(buckets.length - 1, Math.max(0, current.bucket + delta))
-    setCursorId(bucketId(target))
+    setCursorId(bucketId(buckets[target]!))
   }
 
   const toggle = (bucket: number) => {
@@ -159,7 +142,7 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
       return next
     })
     // Park the cursor on the header: the rows below it may vanish.
-    setCursorId(bucketId(bucket))
+    setCursorId(bucketId(buckets[bucket]!))
   }
 
   const runAction = (fn: (pr: PR) => Promise<string>, pending: string) => {
@@ -216,7 +199,7 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
         applySearch("")
         break
       case "r":
-        if (!loading) refresh(search)
+        if (!loading) refresh()
         break
       case "q":
         renderer.destroy()
@@ -253,24 +236,24 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
         {buckets.map((b, i) => {
           const count = b.total ?? b.prs.length
           const open = !collapsed.has(b.name)
-          const onHeader = current?.id === bucketId(i)
+          const onHeader = current?.id === bucketId(b)
           return (
             <box
               key={b.name}
-              id={bucketBoxId(i)}
+              id={bucketBoxId(b)}
               border
               borderStyle="rounded"
               borderColor={current?.bucket === i ? C.borderActive : C.border}
               style={{ flexDirection: "column" }}
             >
-              <box id={bucketId(i)} style={{ height: 1, paddingLeft: 1, backgroundColor: onHeader ? C.selected : C.bg }}>
+              <box id={bucketId(b)} style={{ height: 1, paddingLeft: 1, backgroundColor: onHeader ? C.selected : C.bg }}>
                 <text fg={C.text}>
                   <span fg={C.muted}>{count === 0 ? " " : open ? "▾" : "▸"}</span> {b.name}{" "}
                   <span fg={C.faint}>{count === 0 ? "- No pull requests" : String(count)}</span>
                 </text>
               </box>
               {open && b.prs.map(pr => (
-                <PrRow key={prKey(pr)} id={prId(i, pr)} pr={pr} repoTag={multi ? tag(pr.repo) : undefined} authorW={authorW} titleW={titleW} selected={current?.id === prId(i, pr)} />
+                <PrRow key={prKey(pr)} id={prId(b, pr)} pr={pr} now={now} repoTag={multi ? tag(pr.repo) : undefined} authorW={authorW} titleW={titleW} selected={current?.id === prId(b, pr)} />
               ))}
             </box>
           )
@@ -292,7 +275,7 @@ export function App({ repos, load, actions }: { repos: Repo[]; load: (search?: s
   )
 }
 
-function PrRow({ id, pr, repoTag, authorW, titleW, selected }: { id: string; pr: PR; repoTag?: string; authorW: number; titleW: number; selected: boolean }) {
+function PrRow({ id, pr, now, repoTag, authorW, titleW, selected }: { id: string; pr: PR; now: Date; repoTag?: string; authorW: number; titleW: number; selected: boolean }) {
   const [stateGlyph, stateColor] = STATE[pr.state]
   const [ciGlyph, ciColor] = STATUS[pr.ci]
   const [revGlyph, revColor] = STATUS[pr.review]
@@ -308,7 +291,7 @@ function PrRow({ id, pr, repoTag, authorW, titleW, selected }: { id: string; pr:
         {"  "}<span fg={ciColor}>{ciGlyph}</span>
         {"  "}<span fg={revColor}>{revGlyph}</span>
         {"  "}{changesPad}<span fg={C.green}>{add}</span><span fg={C.muted}>/</span><span fg={C.red}>{del}</span>
-        {"  "}<span fg={pr.stale ? C.red : C.text}>{pr.updated.padStart(UPDATED_W)}</span>
+        {"  "}<span fg={isStale(pr, now) ? C.red : C.text}>{relativeTime(pr.updatedAt, now).padStart(UPDATED_W)}</span>
       </text>
     </box>
   )

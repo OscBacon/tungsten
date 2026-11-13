@@ -27,6 +27,9 @@ export function parseRepo(s: string, fallbackHost = DEFAULT_HOST): Repo {
   throw new Error(`expected the "[HOST/]OWNER/REPO" format, got "${s}"`)
 }
 
+// Repos compare case-insensitively, like GitHub's names.
+export const repoKey = (r: Repo) => `${r.host}/${r.owner}/${r.name}`.toLowerCase()
+
 // Like gh, only show the host when it isn't the default.
 export const repoLabel = (r: Repo) =>
   `${r.host === DEFAULT_HOST ? "" : r.host + "/"}${r.owner}/${r.name}`

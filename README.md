@@ -38,6 +38,7 @@ tungsten -R cli/cli,cli/go-gh   # or several, listed together (repeating -R work
 tungsten --demo          # sample data, no clone or network
 tungsten --demo-multiple # sample data from several repos
 tungsten --show-git-prompt  # let c and w ask for ssh passphrases or credentials
+tungsten --no-watch      # don't poll for changes; r still refreshes
 ```
 
 ## Buckets
@@ -45,6 +46,7 @@ tungsten --show-git-prompt  # let c and w ask for ssh passphrases or credentials
 - Needs your review
 - Returned to you
 - Approved
+- Just merged (only while there are some)
 - Waiting for reviewers
 - Drafts
 - Open
@@ -52,6 +54,15 @@ tungsten --show-git-prompt  # let c and w ask for ssh passphrases or credentials
 
 Each shows up to 25 PRs and the total count. With several repos, each bucket holds all of
 their PRs, newest first, and each row names its repo next to the author.
+
+## Live updates
+
+While it's open, tungsten checks each repo for changed PRs every 15 seconds and moves them to
+the buckets they now belong in. A PR merged meanwhile shows under "Just merged" for a minute.
+
+Each check asks GitHub whether the repo's most recently updated PRs changed; when they haven't,
+the answer is free under GitHub's rate limit. Changed PRs, and PRs whose CI is still running,
+are fetched again. It needs only read access to the repos.
 
 ## Keys
 

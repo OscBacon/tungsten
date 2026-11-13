@@ -2,7 +2,8 @@ import { expect, test } from "bun:test"
 import { testRender } from "@opentui/react/test-utils"
 import { act } from "react"
 import { App, type Actions } from "./app"
-import { demoBuckets, type Bucket } from "./data"
+import { demoBuckets, type Bucket, type PR } from "./data"
+import type { Watch, Watcher } from "./inbox"
 import { parseRepo } from "./repo"
 
 const press = async (s: Awaited<ReturnType<typeof testRender>>, fn: () => unknown = () => {}) => {
@@ -40,6 +41,7 @@ test("arrows move, t collapses the current bucket, cursor lands on its header", 
     console.log(frame)
     expect(frame).toMatch(/▌ • ◆  fix: throw/)
     expect(frame.trimEnd().split("\n").at(-2)).toMatch(/^╰/) // last bucket fully visible
+    expect(frame.split("\n")[0]).toMatch(/^ Inbox/) // a box scrolled half out of view doesn't draw over the header
   } finally { s.renderer.destroy() }
 })
 
@@ -287,16 +289,16 @@ test("c and w act on the PR under the cursor and show the outcome", async () => 
 })
 
 test("several repos: rows name their repo, and PRs sharing a number are told apart", async () => {
-  const repos = ["movablevoice/workfone", "movablevoice/workfone-ios"].map(r => parseRepo(r))
+  const repos = ["acme/app", "acme/app-ios"].map(r => parseRepo(r))
   const [a, b] = demoBuckets(...repos)[0]!.prs
   const buckets: Bucket[] = [{ name: "Open", prs: [{ ...a!, number: 7 }, { ...b!, number: 7, title: "same number, other repo" }] }]
   const s = await testRender(<App repos={repos} load={async () => buckets} actions={noActions} />, { width: 140, height: 20 })
   try {
     await press(s)
     let frame = s.captureCharFrame()
-    expect(frame).toContain("movablevoice/workfone, movablevoice/workfone-ios")
-    expect(frame).toContain("aryamannaik workfone#7")
-    expect(frame).toContain("aryamannaik workfone-ios#7")
+    expect(frame).toContain("acme/app, acme/app-ios")
+    expect(frame).toContain("aryamannaik app#7")
+    expect(frame).toContain("aryamannaik app-ios#7")
 
     await press(s, () => s.mockInput.pressArrow("down"))
     await press(s, () => s.mockInput.pressArrow("down"))
@@ -321,5 +323,59 @@ test("page down and page up jump between bucket headers", async () => {
     await pageUp() // -> "Drafts" header
     await press(s, () => s.mockInput.pressKey("t"))
     expect(s.captureCharFrame()).toContain("▸ Drafts")
+  } finally { s.renderer.destroy() }
+})
+
+test("watched changes move PRs at once, survive a lagging reload, and a merge shows under Approved for a while", async () => {
+  let on!: Watcher
+  const watch: Watch = w => { on = w; return () => {} }
+  // Rules like toBuckets() gives its buckets, for the demo's author.
+  const mine = (pr: PR) => pr.open && pr.author === "gregoryfoster"
+  const rules: Record<string, (pr: PR) => boolean> = {
+    "Approved": pr => mine(pr) && pr.review === "pass",
+    "Waiting for reviewers": pr => mine(pr) && pr.review === "pending",
+    "Open": pr => pr.open,
+  }
+  const withRules = (b: Bucket[]) => b.map(bucket => ({ ...bucket, accepts: rules[bucket.name] }))
+  const demo = withRules(demoBuckets(repo))
+  const [merging, dismissed] = demo[2]!.prs as [PR, PR]
+  const fresh = { ...dismissed, review: "pending" as const, state: "review" as const }
+  // The search index hasn't caught up: still under Approved, but with the fresh data.
+  let loaded = demo
+  const s = await testRender(<App repos={[repo]} load={async () => loaded} watch={watch} actions={noActions} justMergedMs={300} />, { width: 110, height: 40 })
+  const order = () => {
+    const frame = s.captureCharFrame()
+    return ["Approved", "Just merged", "Waiting for reviewers", "fix(auth)", "Drafts"].map(t => frame.indexOf(t))
+  }
+  try {
+    await press(s)
+    await press(s, () => on.prs([fresh]))
+    let [approved, , waiting, row, drafts] = order()
+    expect(approved).toBeLessThan(waiting!)
+    expect(waiting).toBeLessThan(row!)
+    expect(row).toBeLessThan(drafts!)
+    expect(s.captureCharFrame()).toContain("▾ Waiting for reviewers 1")
+
+    loaded = withRules(demoBuckets(repo)).map(b => ({ ...b, prs: b.prs.map(pr => (pr.number === fresh.number ? fresh : pr)) }))
+    await press(s, () => s.mockInput.pressKey("r"))
+    ;[approved, , waiting, row] = order()
+    expect(row).toBeGreaterThan(waiting!)
+
+    await press(s, () => on.prs([{ ...merging, state: "merged", review: "merged", open: false }]))
+    {
+      const [approvedAt, justMerged, waitingAt] = order()
+      expect(approvedAt).toBeLessThan(justMerged!)
+      expect(justMerged).toBeLessThan(waitingAt!)
+      const lines = s.captureCharFrame().split("\n")
+      const header = lines.findIndex(l => l.includes("Approved - No pull requests")) // it left Approved
+      expect(lines[header + 3]).toContain("▾ Just merged 1") // the next box down
+    }
+    await press(s, () => new Promise(r => setTimeout(r, 400)))
+    expect(s.captureCharFrame()).not.toContain("Just merged")
+
+    await press(s, () => on.error("HTTP 502"))
+    expect(s.captureCharFrame()).toContain("✗ live updates paused: HTTP 502")
+    await press(s, () => on.error(undefined))
+    expect(s.captureCharFrame()).not.toContain("live updates paused")
   } finally { s.renderer.destroy() }
 })
